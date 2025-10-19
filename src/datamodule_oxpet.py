@@ -97,30 +97,59 @@ class OxPetDataModule(pl.LightningDataModule):
         if stage == "test" or stage is None:
             # No splits for test
             self.oxpet_test = test_dataset
-
-    # Return the training dataloader
-    def train_dataloader(self):
-        return DataLoader(self.oxpet_train, batch_size=self.batch_size, shuffle=True,)
-
-    # Return the validation dataloader
-    def val_dataloader(self):
-        return DataLoader(self.oxpet_val, batch_size=self.batch_size)
-
-    # Return the test dataloader
-    def test_dataloader(self):
-        return DataLoader(self.oxpet_test, batch_size=self.batch_size)
     
-if __name__ == "__main__":
-    # For debugging
-    dm = OxPetDataModule(target_type="segmentation")
-    dm.prepare_data()
-    dm.setup("fit")
-    imgs, masks = next(iter(dm.train_dataloader()))
-    print("Train batch:", imgs.shape, masks.shape)
+    def train_dataloader(self):
+        return DataLoader(
+            self.oxpet_train,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=self._collate_fn
+        )
 
-    imgs, masks = next(iter(dm.val_dataloader()))
-    print("Val batch:", imgs.shape, masks.shape)
+    def val_dataloader(self):
+        return DataLoader(
+            self.oxpet_val,
+            batch_size=self.batch_size,
+            collate_fn=self._collate_fn
+        )
 
-    dm.setup("test")
-    imgs, masks = next(iter(dm.test_dataloader()))
-    print("Test batch:", imgs.shape, masks.shape)
+    def test_dataloader(self):
+        return DataLoader(
+            self.oxpet_test,
+            batch_size=self.batch_size,
+            collate_fn=self._collate_fn
+        )
+
+    def _collate_fn(self, batch):
+        # batch is a list of tuples: (image, mask)
+        images, masks = zip(*batch)
+        images = torch.stack(images).float()             # convert images to float
+        masks = torch.stack(masks).float() / 255.0      # convert masks to float 0-1
+        return images, masks
+
+    # # Return the training dataloader
+    # def train_dataloader(self):
+    #     return DataLoader(self.oxpet_train, batch_size=self.batch_size, shuffle=True,)
+
+    # # Return the validation dataloader
+    # def val_dataloader(self):
+    #     return DataLoader(self.oxpet_val, batch_size=self.batch_size)
+
+    # # Return the test dataloader
+    # def test_dataloader(self):
+    #     return DataLoader(self.oxpet_test, batch_size=self.batch_size)
+    
+# if __name__ == "__main__":
+#     # For debugging
+#     dm = OxPetDataModule(target_type="segmentation")
+#     dm.prepare_data()
+#     dm.setup("fit")
+#     imgs, masks = next(iter(dm.train_dataloader()))
+#     print("Train batch:", imgs.shape, masks.shape)
+
+#     imgs, masks = next(iter(dm.val_dataloader()))
+#     print("Val batch:", imgs.shape, masks.shape)
+
+#     dm.setup("test")
+#     imgs, masks = next(iter(dm.test_dataloader()))
+#     print("Test batch:", imgs.shape, masks.shape)

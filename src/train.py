@@ -12,7 +12,7 @@ from model_unetpp import *
 # print(torch.cuda.get_device_name(0))  # Should print "NVIDIA GeForce RTX 5070 Ti"
 
 # Instantiate data module and split into train and val
-dm = OxPetDataModule()
+dm = OxPetDataModule(batch_size=8)
 dm.prepare_data()
 dm.setup("fit")
 
@@ -36,7 +36,7 @@ trainer = pl.Trainer(
     max_epochs=5,
     accelerator="gpu",
     devices=1,
-    # precision="16-mixed",
+    precision=16,
     callbacks=[checkpoint_callback],
 )
 
