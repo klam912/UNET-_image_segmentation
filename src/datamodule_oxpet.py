@@ -13,20 +13,21 @@ pl.seed_everything(42)
 
 # Create a LightningDataModule for OxPet
 class OxPetDataModule(pl.LightningDataModule):
-    def __init__(self, data_dir: str = "./data", batch_size: int = 64, target_type: str = "segmentation"):
+    def __init__(self, data_dir: str = "./data", batch_size: int = 64, target_type: str = "segmentation", num_workers: int = 8):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.target_type = target_type
+        self.num_workers = num_workers
 
         # Transform the image by resizing and converting to tensors 
         self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.Resize((128, 128)),
             transforms.ToTensor(),
         ])
 
         self.target_transform = transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.Resize((128, 128)),
             transforms.PILToTensor(), # for segmentation mask
         ])
 
@@ -103,53 +104,32 @@ class OxPetDataModule(pl.LightningDataModule):
             self.oxpet_train,
             batch_size=self.batch_size,
             shuffle=True,
-            collate_fn=self._collate_fn
+            collate_fn=self._collate_fn,
+            num_workers=self.num_workers
         )
 
     def val_dataloader(self):
         return DataLoader(
             self.oxpet_val,
             batch_size=self.batch_size,
-            collate_fn=self._collate_fn
+            collate_fn=self._collate_fn,
+            num_workers=self.num_workers
         )
 
     def test_dataloader(self):
         return DataLoader(
             self.oxpet_test,
             batch_size=self.batch_size,
-            collate_fn=self._collate_fn
+            collate_fn=self._collate_fn,
+            num_workers=self.num_workers
         )
 
     def _collate_fn(self, batch):
         # batch is a list of tuples: (image, mask)
         images, masks = zip(*batch)
-        images = torch.stack(images).float()             # convert images to float
-        masks = torch.stack(masks).float() / 255.0      # convert masks to float 0-1
+        images = torch.stack(images).float()
+        
+        # Stack and remove channel dimension for multi-class segmentation
+        masks = torch.stack(masks).squeeze(1).long() - 1 # (B, H, W) directly
+        
         return images, masks
-
-    # # Return the training dataloader
-    # def train_dataloader(self):
-    #     return DataLoader(self.oxpet_train, batch_size=self.batch_size, shuffle=True,)
-
-    # # Return the validation dataloader
-    # def val_dataloader(self):
-    #     return DataLoader(self.oxpet_val, batch_size=self.batch_size)
-
-    # # Return the test dataloader
-    # def test_dataloader(self):
-    #     return DataLoader(self.oxpet_test, batch_size=self.batch_size)
-    
-# if __name__ == "__main__":
-#     # For debugging
-#     dm = OxPetDataModule(target_type="segmentation")
-#     dm.prepare_data()
-#     dm.setup("fit")
-#     imgs, masks = next(iter(dm.train_dataloader()))
-#     print("Train batch:", imgs.shape, masks.shape)
-
-#     imgs, masks = next(iter(dm.val_dataloader()))
-#     print("Val batch:", imgs.shape, masks.shape)
-
-#     dm.setup("test")
-#     imgs, masks = next(iter(dm.test_dataloader()))
-#     print("Test batch:", imgs.shape, masks.shape)

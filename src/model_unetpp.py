@@ -47,16 +47,11 @@ class UpSample(nn.Module):
 class UNetPP(nn.Module):
     """
     UNet++ (nested U-Net) implementation.
-    Args:
-        in_channels: input channels (e.g., 3)
-        out_channels: number of output channels (e.g., number of classes or 1 for binary)
-        filters: list of feature counts per encoder stage, e.g. [64, 128, 256, 512]
-        deep_supervision: if True, provide output from intermediate decoder stages (as in the paper)
     """
-    def __init__(self, in_channels=3, out_channels=1, filters: Optional[List[int]] = None, deep_supervision: bool = False):
+    def __init__(self, in_channels=3, out_channels=3, filters: Optional[List[int]] = None, deep_supervision: bool = False):
         super().__init__()
         if filters is None:
-            filters = [64, 128, 256, 512]  # default configuration (4 levels)
+            filters = [64, 128, 256, 512]
 
         self.deep_supervision = deep_supervision
         n = len(filters)
@@ -72,11 +67,8 @@ class UNetPP(nn.Module):
         self.pool2 = nn.MaxPool2d(2)
 
         self.conv3_0 = ConvBlock(filters[2], filters[3])
-        # if you want deeper, add more blocks similarly
 
-        # Decoder nested blocks (x_i_j where i = depth, j = level of nested aggregation)
-        # Following names: conv{depth}_{stage}
-        # conv0_1 depends on conv0_0 and upsample(conv1_0)
+        # Decoder nested blocks
         self.up1_0 = UpSample(filters[1], filters[0])
         self.conv0_1 = ConvBlock(filters[0] + filters[0], filters[0])
 
@@ -86,19 +78,18 @@ class UNetPP(nn.Module):
         self.up3_2 = UpSample(filters[3], filters[2])
         self.conv2_1 = ConvBlock(filters[2] + filters[2], filters[2])
 
-        # second nested level
-        # conv0_2 uses conv0_0, conv0_1, upsample(conv1_1)
+        # Second nested level
         self.up1_1 = UpSample(filters[1], filters[0])
         self.conv0_2 = ConvBlock(filters[0] * 2 + filters[0], filters[0])
 
         self.up2_2 = UpSample(filters[2], filters[1])
         self.conv1_2 = ConvBlock(filters[1] * 2 + filters[1], filters[1])
 
-        # third nested level (if depth allows)
+        # Third nested level
         self.up1_2 = UpSample(filters[1], filters[0])
         self.conv0_3 = ConvBlock(filters[0] * 3 + filters[0], filters[0])
 
-        # Final 1x1 convs for outputs (deep supervision)
+        # Final outputs
         if self.deep_supervision:
             self.final1 = nn.Conv2d(filters[0], out_channels, kernel_size=1)
             self.final2 = nn.Conv2d(filters[0], out_channels, kernel_size=1)
@@ -108,10 +99,10 @@ class UNetPP(nn.Module):
 
     def forward(self, x):
         # encoder
-        x0_0 = self.conv0_0(x)                 # level 0, stage 0
-        x1_0 = self.conv1_0(self.pool0(x0_0))  # level 1, stage 0
-        x2_0 = self.conv2_0(self.pool1(x1_0))  # level 2, stage 0
-        x3_0 = self.conv3_0(self.pool2(x2_0))  # level 3, stage 0
+        x0_0 = self.conv0_0(x)
+        x1_0 = self.conv1_0(self.pool0(x0_0))
+        x2_0 = self.conv2_0(self.pool1(x1_0))
+        x3_0 = self.conv3_0(self.pool2(x2_0))
 
         # first nested layer
         x0_1 = self.conv0_1(torch.cat([x0_0, self.up1_0(x1_0)], dim=1))
@@ -122,16 +113,14 @@ class UNetPP(nn.Module):
         x0_2 = self.conv0_2(torch.cat([x0_0, x0_1, self.up1_1(x1_1)], dim=1))
         x1_2 = self.conv1_2(torch.cat([x1_0, x1_1, self.up2_2(x2_1)], dim=1))
 
-        # third nested layer (top-most aggregation)
+        # third nested layer
         x0_3 = self.conv0_3(torch.cat([x0_0, x0_1, x0_2, self.up1_2(x1_2)], dim=1))
 
         # outputs
         if self.deep_supervision:
-            # Return tuple of outputs from different depths (paper uses these for deep supervision)
             out1 = self.final1(x0_1)
             out2 = self.final2(x0_2)
             out3 = self.final3(x0_3)
-            # Upsample to input resolution if necessary (should already match)
             return (out1, out2, out3)
         else:
             return self.final(x0_3)
@@ -140,33 +129,57 @@ class UNetPP(nn.Module):
 # --------------------
 # Loss and metrics
 # --------------------
-def dice_coefficient(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6):
+def dice_coefficient_multiclass(pred: torch.Tensor, target: torch.Tensor, num_classes: int = 3, eps: float = 1e-6):
     """
-    pred: probabilities or logits after sigmoid (shape Bx1xHxW or BxCxHxW)
-    target: same shape, binary {0,1}
+    Multi-class Dice coefficient.
+    pred: logits (BxCxHxW) or probabilities after softmax
+    target: class indices (BxHxW) with values in [0, num_classes-1]
     """
-    if pred.ndim > 2:
-        pred = pred.flatten(2)
-        target = target.flatten(2)
-    intersection = (pred * target).sum(-1)
-    sums = pred.sum(-1) + target.sum(-1)
-    dice = 2.0 * intersection / (sums + eps)
-    return dice.mean()
+    # Convert logits to probabilities if needed
+    if pred.shape[1] == num_classes:
+        pred = F.softmax(pred, dim=1)
+    
+    # Convert target to one-hot encoding
+    target_one_hot = F.one_hot(target.long(), num_classes=num_classes)  # BxHxWxC
+    target_one_hot = target_one_hot.permute(0, 3, 1, 2).float()  # BxCxHxW
+    
+    # Compute Dice per class
+    dice_scores = []
+    for c in range(num_classes):
+        pred_c = pred[:, c]
+        target_c = target_one_hot[:, c]
+        
+        pred_c = pred_c.flatten()
+        target_c = target_c.flatten()
+        
+        intersection = (pred_c * target_c).sum()
+        dice = (2.0 * intersection + eps) / (pred_c.sum() + target_c.sum() + eps)
+        dice_scores.append(dice)
+    
+    return torch.stack(dice_scores).mean()
 
 
-class DiceBCELoss(nn.Module):
-    def __init__(self, weight_bce=0.5):
-        super().__init__()
-        self.bce = nn.BCEWithLogitsLoss()
-        self.weight_bce = weight_bce
-
-    def forward(self, logits, target):
-        # logits: raw model output (no sigmoid)
-        bce_loss = self.bce(logits, target)
-        probs = torch.sigmoid(logits)
-        dice = dice_coefficient(probs, target)
-        dice_loss = 1.0 - dice
-        return self.weight_bce * bce_loss + (1.0 - self.weight_bce) * dice_loss
+def iou_coefficient_multiclass(pred: torch.Tensor, target: torch.Tensor, num_classes: int = 3, eps: float = 1e-6):
+    """
+    Multi-class IoU coefficient.
+    pred: logits (BxCxHxW) or probabilities after softmax
+    target: class indices (BxHxW) with values in [0, num_classes-1]
+    """
+    # Convert logits to class predictions
+    pred_classes = torch.argmax(pred, dim=1)  # BxHxW
+    
+    iou_scores = []
+    for c in range(num_classes):
+        pred_c = (pred_classes == c)
+        target_c = (target == c)
+        
+        intersection = (pred_c & target_c).float().sum()
+        union = (pred_c | target_c).float().sum()
+        
+        iou = (intersection + eps) / (union + eps)
+        iou_scores.append(iou)
+    
+    return torch.stack(iou_scores).mean()
 
 
 # --------------------
@@ -176,7 +189,7 @@ class UNetPPLightning(pl.LightningModule):
     def __init__(
         self,
         in_channels: int = 3,
-        out_channels: int = 1,
+        out_channels: int = 3,
         filters: Optional[List[int]] = None,
         lr: float = 1e-3,
         weight_decay: float = 1e-6,
@@ -185,65 +198,84 @@ class UNetPPLightning(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(ignore=['filters'])
         self.model = UNetPP(in_channels, out_channels, filters=filters, deep_supervision=deep_supervision)
-        self.loss_fn = DiceBCELoss()
+        self.loss_fn = nn.CrossEntropyLoss()
         self.lr = lr
         self.weight_decay = weight_decay
         self.deep_supervision = deep_supervision
+        self.num_classes = out_channels
 
     def forward(self, x):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        img, mask = batch  # mask should be float tensor with values 0/1 (Bx1xHxW)
+        img, mask = batch  # mask: (B, H, W) with values [0, 1, 2]
         logits = self(img)
 
         if self.deep_supervision:
-            # logits is a tuple of outputs; compute loss on last (or average)
-            # We'll average loss across deep supervision outputs.
             losses = []
             for out in logits:
-                # resize out to mask size if necessary
-                if out.shape != mask.shape:
-                    out = F.interpolate(out, size=mask.shape[2:], mode='bilinear', align_corners=True)
+                if out.shape[2:] != mask.shape[1:]:
+                    out = F.interpolate(out, size=mask.shape[1:], mode='bilinear', align_corners=True)
                 losses.append(self.loss_fn(out, mask))
             loss = torch.stack(losses).mean()
-            # Use last output for metrics
-            pred = torch.sigmoid(logits[-1])
+            pred_logits = logits[-1]
         else:
-            if logits.shape != mask.shape:
-                logits = F.interpolate(logits, size=mask.shape[2:], mode='bilinear', align_corners=True)
+            if logits.shape[2:] != mask.shape[1:]:
+                logits = F.interpolate(logits, size=mask.shape[1:], mode='bilinear', align_corners=True)
             loss = self.loss_fn(logits, mask)
-            pred = torch.sigmoid(logits)
+            pred_logits = logits
 
-        dice = dice_coefficient(pred, mask)
-        # log
+        dice = dice_coefficient_multiclass(pred_logits, mask, num_classes=self.num_classes)
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/dice", dice, on_step=True, on_epoch=True, prog_bar=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        img, mask = batch
+        img, mask = batch  # mask: (B, H, W)
         logits = self(img)
+        
         if self.deep_supervision:
             out = logits[-1]
         else:
             out = logits
 
-        if out.shape != mask.shape:
-            out = F.interpolate(out, size=mask.shape[2:], mode='bilinear', align_corners=True)
+        if out.shape[2:] != mask.shape[1:]:
+            out = F.interpolate(out, size=mask.shape[1:], mode='bilinear', align_corners=True)
 
         loss = self.loss_fn(out, mask)
-        prob = torch.sigmoid(out)
-        dice = dice_coefficient(prob, mask)
+        dice = dice_coefficient_multiclass(out, mask, num_classes=self.num_classes)
 
         self.log("val/loss", loss, on_epoch=True, prog_bar=True)
         self.log("val/dice", dice, on_epoch=True, prog_bar=True)
 
         return {"val_loss": loss, "val_dice": dice}
 
+    def test_step(self, batch, batch_idx):
+        img, mask = batch  # mask: (B, H, W)
+        logits = self(img)
+        
+        if self.deep_supervision:
+            out = logits[-1]
+        else:
+            out = logits
+            
+        if out.shape[2:] != mask.shape[1:]:
+            out = F.interpolate(out, size=mask.shape[1:], mode='bilinear', align_corners=True)
+
+        loss = self.loss_fn(out, mask)
+        
+        # Compute metrics
+        dice_score = dice_coefficient_multiclass(out, mask, num_classes=self.num_classes)
+        iou_score = iou_coefficient_multiclass(out, mask, num_classes=self.num_classes)
+
+        self.log("test/loss", loss, on_epoch=True, prog_bar=True)
+        self.log("test/dice", dice_score, on_epoch=True, prog_bar=True)
+        self.log("test/iou", iou_score, on_epoch=True, prog_bar=True)
+
+        return {"test_loss": loss, "test_dice": dice_score, "test_iou": iou_score}
+
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        # simple ReduceLROnPlateau as example
         scheduler = {
             'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='max', patience=3, factor=0.5),
             'monitor': 'val/dice',
