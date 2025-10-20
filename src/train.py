@@ -36,7 +36,6 @@ def parse_args():
     # Model
     parser.add_argument("--in_channels", type=int, default=3, help="Input channels")
     parser.add_argument("--out_channels", type=int, default=3, help="Output channels (3 for pet/background/border)")
-    parser.add_argument("--deep_supervision", action="store_true", help="Enable deep supervision")
     
     # Training
     parser.add_argument("--max_epochs", type=int, default=50, help="Maximum epochs")
@@ -73,7 +72,7 @@ def train(args, dm, model, logger):
     
     # Callbacks
     checkpoint_callback = ModelCheckpoint(
-        monitor="val/dice",
+        monitor="val_Dice",
         mode="max",
         save_top_k=1,
         filename="best-unetpp-{epoch:02d}-{val/dice:.4f}",
@@ -85,7 +84,7 @@ def train(args, dm, model, logger):
     # Early stopping
     if not args.no_early_stop:
         early_stop = EarlyStopping(
-            monitor="val/dice",
+            monitor="val_Dice",
             patience=args.patience,
             mode="max",
             verbose=True,
@@ -201,12 +200,13 @@ def main():
     
     # Model
     model = UNetPPLightning(
-        in_channels=args.in_channels,
-        out_channels=args.out_channels,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        deep_supervision=args.deep_supervision,
-    )
+       in_channels=args.in_channels,
+       out_channels=args.out_channels,
+       lr=args.lr,
+        classes=args.out_channels, 
+       weight_decay=args.weight_decay,
+       max_epochs=args.max_epochs,
+   )
     
     # Execute based on mode
     checkpoint_path = None
