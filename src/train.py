@@ -28,7 +28,7 @@ def parse_args():
         default="both",
         help="Mode: train only, test only, or both"
     )
-    
+            
     # Data
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
