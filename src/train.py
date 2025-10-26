@@ -203,7 +203,7 @@ def main():
        in_channels=args.in_channels,
        out_channels=args.out_channels,
        lr=args.lr,
-        classes=args.out_channels, 
+    classes=args.out_channels, 
        weight_decay=args.weight_decay,
        max_epochs=args.max_epochs,
    )
