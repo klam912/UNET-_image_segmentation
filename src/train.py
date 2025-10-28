@@ -238,7 +238,7 @@ def main():
     
     # Finish the W&B run
     if args.mode in ["train", "both"]:
-        wandb_logger.experiment.finish()
+        wandb_logger.experiment.finish() 
 
 
 if __name__ == "__main__":
