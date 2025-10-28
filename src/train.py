@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 
 from datamodule_oxpet import OxPetDataModule
 from model_unetpp import UNetPPLightning
@@ -57,6 +57,10 @@ def parse_args():
     parser.add_argument("--accelerator", type=str, default="gpu", 
                        choices=["cpu", "gpu", "tpu"], help="Accelerator type")
     
+    # W&B
+    parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity (team name)")
+    parser.add_argument("--wandb_project", type=str, default="assignment-2-DL", help="W&B project name")
+    
     # Other
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--fast_dev_run", action="store_true", help="Quick run for debugging")
@@ -75,7 +79,7 @@ def train(args, dm, model, logger):
         monitor="val_Dice",
         mode="max",
         save_top_k=1,
-        filename="best-unetpp-{epoch:02d}-{val/dice:.4f}",
+        filename="best-unetpp-{epoch:02d}-{val_Dice:.4f}",
         verbose=True,
     )
     
@@ -108,7 +112,7 @@ def train(args, dm, model, logger):
     
     print(f"\n✓ Training complete!")
     print(f"✓ Best model saved at: {checkpoint_callback.best_model_path}")
-    print(f"✓ Best val/dice: {checkpoint_callback.best_model_score:.4f}\n")
+    print(f"✓ Best val_Dice: {checkpoint_callback.best_model_score:.4f}\n")
     
     return trainer, checkpoint_callback.best_model_path
 
@@ -195,27 +199,46 @@ def main():
     print(f"✓ Data loaded: {len(dm.train_dataloader())} train batches, "
           f"{len(dm.val_dataloader())} val batches\n")
     
-    # Logger
-    logger = CSVLogger(save_dir=args.save_dir, name="UNetPP")
+    # Initialize W&B Logger with hyperparameters
+    wandb_logger = WandbLogger(
+        project=args.wandb_project,
+        entity=args.wandb_entity,  # Set your team name here or pass via CLI
+        config={
+            "learning_rate": args.lr,
+            "architecture": "UNet++",
+            "dataset": "OxfordIIIT-Pet",
+            "batch_size": args.batch_size,
+            "max_epochs": args.max_epochs,
+            "weight_decay": args.weight_decay,
+            "in_channels": args.in_channels,
+            "out_channels": args.out_channels,
+            "precision": args.precision,
+            "seed": args.seed,
+        }
+    )
     
     # Model
     model = UNetPPLightning(
-       in_channels=args.in_channels,
-       out_channels=args.out_channels,
-       lr=args.lr,
-    classes=args.out_channels, 
-       weight_decay=args.weight_decay,
-       max_epochs=args.max_epochs,
-   )
+        in_channels=args.in_channels,
+        out_channels=args.out_channels,
+        lr=args.lr,
+        classes=args.out_channels, 
+        weight_decay=args.weight_decay,
+        max_epochs=args.max_epochs,
+    )
     
     # Execute based on mode
     checkpoint_path = None
     
     if args.mode in ["train", "both"]:
-        trainer, checkpoint_path = train(args, dm, model, logger)
+        trainer, checkpoint_path = train(args, dm, model, wandb_logger)
     
     if args.mode in ["test", "both"]:
         evaluate(args, dm, checkpoint_path)
+    
+    # Finish the W&B run
+    if args.mode in ["train", "both"]:
+        wandb_logger.experiment.finish()
 
 
 if __name__ == "__main__":
