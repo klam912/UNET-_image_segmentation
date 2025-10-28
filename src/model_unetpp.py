@@ -1,9 +1,12 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
 import torchmetrics
 import segmentation_models_pytorch as smp
-from segmentation_models_pytorch.losses import DiceLoss
+from segmentation_models_pytorch.losses import DiceLoss as SMPDiceLoss
+import wandb
+
 
 # UNET++ is consisted of a ConvBlock, UpSampling, DownSampling 
 class ConvBlock(nn.Module):
@@ -224,12 +227,20 @@ class DiceLoss(nn.Module):
 
 # PyTorch Lightning Module
 class UNetPPLightning(pl.LightningModule):
-    def __init__(self, in_channels: int = 3, out_channels: int = 3, use_dice_loss = False, classes: int = 3, lr: float = 1e-3, max_epochs: int = 50, weight_decay: float = 1e-6):
+    def __init__(
+        self, 
+        in_channels: int = 3, 
+        out_channels: int = 3, 
+        use_dice_loss: bool = False, 
+        classes: int = 3, 
+        lr: float = 1e-3, 
+        max_epochs: int = 50, 
+        weight_decay: float = 1e-6
+    ):
         super().__init__()
         self.save_hyperparameters()
 
         self.model = UNetPlusPlus(in_channels=in_channels, classes=classes)
-        self.criterion = DiceLoss()
         self.lr = lr
         self.classes = classes
         self.max_epochs = max_epochs
@@ -238,7 +249,7 @@ class UNetPPLightning(pl.LightningModule):
         self.use_dice_loss = use_dice_loss
         self.ce_loss = nn.CrossEntropyLoss()
         if use_dice_loss:
-            self.dice_loss = DiceLoss(mode="multiclass")
+            self.dice_loss = SMPDiceLoss(mode="multiclass")
 
         # Metrics
         self.train_iou = torchmetrics.JaccardIndex(
@@ -262,9 +273,13 @@ class UNetPPLightning(pl.LightningModule):
         if self.use_dice_loss:
             if self.training:
                 # DiceLoss handles one-hot encoding internally for multiclass mode
-                loss = 0.5 * self.dice_loss(logits, masks) + 0.5 * self.ce_loss(
-                    logits, masks
-                )
+                dice_loss_value = self.dice_loss(logits, masks)
+                ce_loss_value = self.ce_loss(logits, masks)
+                loss = 0.5 * dice_loss_value + 0.5 * ce_loss_value
+                
+                # Log individual loss components for W&B
+                self.log("train_dice_loss", dice_loss_value, on_step=False, on_epoch=True, prog_bar=False)
+                self.log("train_ce_loss", ce_loss_value, on_step=False, on_epoch=True, prog_bar=False)
             else:
                 # During validation/test, only use CE loss
                 loss = self.ce_loss(logits, masks)
@@ -277,9 +292,11 @@ class UNetPPLightning(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss, preds, masks = self.step(batch)
+        
+        # Log training loss
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
 
-        # Update metrics safely
+        # Update and log metrics
         self.train_iou.update(preds, masks)
         self.log(
             "train_mIoU",
@@ -288,16 +305,24 @@ class UNetPPLightning(pl.LightningModule):
             on_epoch=True,
             prog_bar=True,
         )
+        
+        # Log learning rate to W&B
+        current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log("learning_rate", current_lr, on_step=True, on_epoch=False, prog_bar=False)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss, preds, masks = self.step(batch)
-        self.log("val_loss", loss, prog_bar=True)
+        
+        # Log validation loss
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
 
+        # Update metrics
         self.val_iou.update(preds, masks)
         self.val_dice.update(preds, masks)
 
+        # Log metrics
         self.log(
             "val_mIoU", self.val_iou, on_step=False, on_epoch=True, prog_bar=True
         )
@@ -307,9 +332,11 @@ class UNetPPLightning(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         loss, preds, masks = self.step(batch)
-        self.log("test_loss", loss)
-        self.log("test_mIoU", self.val_iou(preds, masks))
-        self.log("test_Dice", self.val_dice(preds, masks))
+        
+        # Log test metrics
+        self.log("test_loss", loss, on_step=False, on_epoch=True)
+        self.log("test_mIoU", self.val_iou(preds, masks), on_step=False, on_epoch=True)
+        self.log("test_Dice", self.val_dice(preds, masks), on_step=False, on_epoch=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
@@ -322,4 +349,21 @@ class UNetPPLightning(pl.LightningModule):
             optimizer, T_max=self.hparams.max_epochs, eta_min=1e-6
         )
 
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        return {
+            "optimizer": optimizer, 
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+            }
+        }
+    
+    def on_train_epoch_end(self):
+        """Log additional metrics at the end of each epoch"""
+        # This is useful for custom logging to W&B
+        pass
+    
+    def on_validation_epoch_end(self):
+        """Log additional metrics at the end of validation"""
+        # You can add custom visualizations here
+        pass
